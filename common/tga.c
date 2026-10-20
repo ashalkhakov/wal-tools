@@ -4,6 +4,23 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Reverse the row order in place, converting between top-down and bottom-up. */
+static void flip_rows(unsigned char *pixels, int width, int height, int bpp)
+{
+	size_t stride = (size_t)width * bpp;
+	unsigned char tmp[4096 * 4];
+	for (int top = 0, bottom = height - 1; top < bottom; top++, bottom--) {
+		unsigned char *a = pixels + top * stride;
+		unsigned char *b = pixels + bottom * stride;
+		for (size_t done = 0; done < stride; done += sizeof(tmp)) {
+			size_t n = stride - done < sizeof(tmp) ? stride - done : sizeof(tmp);
+			memcpy(tmp, a + done, n);
+			memcpy(a + done, b + done, n);
+			memcpy(b + done, tmp, n);
+		}
+	}
+}
+
 static int is_supported(struct image_data image)
 {
 	// Note: we're supporting only 256-color indexed images
@@ -50,7 +67,8 @@ static sptr_t tga_write_header(sptr_t buf, struct image_data image, int expand)
 	write_le16(image.height, &p);
 	*p = expand ? ( image.alpha_pixels ? 32 : 24 ) : 8; // bits per pixel
 	p++;
-	*p = TGA_IM_DESCRIPTOR(TGA_IMAGE_ORIGIN_TOP_LEFT, 0);
+	// Bottom-up rows are the TGA default; Quake 3 engines ignore top-down origins.
+	*p = TGA_IM_DESCRIPTOR(TGA_IMAGE_ORIGIN_BOTTOM_LEFT, (expand && image.alpha_pixels) ? 8 : 0);
 	p++;
 	return (sptr_t){buf.ptr + TGA_HEADER_SIZE, (buf.size - TGA_HEADER_SIZE)};
 }
@@ -73,6 +91,7 @@ sptr_t tga_write(sptr_t buf, struct image_data image, int expand)
 		/* copy pixel data */
 		memcpy(cm_offset.ptr + image.palette.data.size, image.pixels.ptr,
 			image.pixels.size);
+		flip_rows(cm_offset.ptr + image.palette.data.size, image.width, image.height, 1);
 	}
 	else
 	{
@@ -132,6 +151,7 @@ sptr_t tga_write(sptr_t buf, struct image_data image, int expand)
 				buf[i * 3 + 2] = image.palette.data.ptr[j + 0];
 			}
 		}
+		flip_rows(buf, image.width, image.height, image.alpha_pixels ? 4 : 3);
 	}
 	return buf;
 }
@@ -228,6 +248,11 @@ struct image_data *tga_read(const sptr_t data)
 	} else if ((header->image_type == TGA_IMAGE_TYPE_RLE_COLOR_MAPPED) &&
 			   (header->im_pixel_depth == 8)) {
 		tga_read_rle_indexed(im, content);
+	}
+	if (!SPTR_IS_NULL(im->pixels) &&
+		(header->im_origin == TGA_IMAGE_ORIGIN_BOTTOM_LEFT ||
+		 header->im_origin == TGA_IMAGE_ORIGIN_BOTTOM_RIGHT)) {
+		flip_rows(im->pixels.ptr, im->width, im->height, 1);
 	}
 	return im;
 }
